@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  ArrowUpDown,
   CheckCircle2,
   ChevronDown,
   Database,
@@ -36,6 +37,21 @@ import {
 } from "@/lib/storage";
 
 type TabId = "overview" | "records" | "receivables" | "products" | "exceptions" | "history";
+type SortDirection = "asc" | "desc";
+type SortKey =
+  | "name"
+  | "whatsapp"
+  | "product"
+  | "mechanism"
+  | "status"
+  | "firstPayment"
+  | "secondPayment"
+  | "totalPayment"
+  | "remainingPayment";
+type SortConfig = {
+  key: SortKey;
+  direction: SortDirection;
+};
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -65,6 +81,11 @@ const DELTA_LABELS = {
   unchanged: "Tidak berubah",
   needs_review: "Perlu review",
 };
+
+const TEXT_COLLATOR = new Intl.Collator("id-ID", {
+  numeric: true,
+  sensitivity: "base",
+});
 
 export function DashboardClient() {
   const [state, setState] = useState<DashboardState>(() => createEmptyState());
@@ -589,8 +610,21 @@ function ImportHistory({ state, compact = false }: { state: DashboardState; comp
 }
 
 function RecordsTable({ records, emptyLabel }: { records: CanonicalRecord[]; emptyLabel: string }) {
+  const [sort, setSort] = useState<SortConfig>({ key: "totalPayment", direction: "desc" });
+  const sortedRecords = useMemo(
+    () => [...records].sort((first, second) => compareRecords(first, second, sort)),
+    [records, sort],
+  );
+
   if (records.length === 0) {
     return <EmptyState label={emptyLabel} />;
+  }
+
+  function toggleSort(key: SortKey) {
+    setSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
+    }));
   }
 
   return (
@@ -598,23 +632,51 @@ function RecordsTable({ records, emptyLabel }: { records: CanonicalRecord[]; emp
       <table>
         <thead>
           <tr>
-            <th>Nama</th>
-            <th>WhatsApp</th>
-            <th>Produk</th>
-            <th>Mekanisme</th>
-            <th>Status</th>
-            <th className="numeric">Pembayaran 1</th>
-            <th className="numeric">Pembayaran 2</th>
-            <th className="numeric">Total Pembayaran</th>
-            <th className="numeric">Sisa Pembayaran</th>
-            <th>Tanggal</th>
-            <th>Review</th>
+            <SortableHeader
+              label="Nama"
+              sortKey="name"
+              activeSort={sort}
+              onSort={toggleSort}
+              sticky
+            />
+            <SortableHeader label="WhatsApp" sortKey="whatsapp" activeSort={sort} onSort={toggleSort} />
+            <SortableHeader label="Produk" sortKey="product" activeSort={sort} onSort={toggleSort} />
+            <SortableHeader label="Mekanisme" sortKey="mechanism" activeSort={sort} onSort={toggleSort} />
+            <SortableHeader label="Status" sortKey="status" activeSort={sort} onSort={toggleSort} />
+            <SortableHeader
+              label="Pembayaran 1"
+              sortKey="firstPayment"
+              activeSort={sort}
+              onSort={toggleSort}
+              numeric
+            />
+            <SortableHeader
+              label="Pembayaran 2"
+              sortKey="secondPayment"
+              activeSort={sort}
+              onSort={toggleSort}
+              numeric
+            />
+            <SortableHeader
+              label="Total Pembayaran"
+              sortKey="totalPayment"
+              activeSort={sort}
+              onSort={toggleSort}
+              numeric
+            />
+            <SortableHeader
+              label="Sisa Pembayaran"
+              sortKey="remainingPayment"
+              activeSort={sort}
+              onSort={toggleSort}
+              numeric
+            />
           </tr>
         </thead>
         <tbody>
-          {records.map((record) => (
-            <tr key={record.id}>
-              <td>
+          {sortedRecords.map((record) => (
+            <tr className={record.receivableAmount > 0 ? "receivable-row" : undefined} key={record.id}>
+              <td className="sticky-col name-cell">
                 <strong>{record.namaLengkap || "Tanpa nama"}</strong>
                 <small>{record.rawPaymentStatus || "raw status kosong"}</small>
               </td>
@@ -628,19 +690,55 @@ function RecordsTable({ records, emptyLabel }: { records: CanonicalRecord[]; emp
               <td className="numeric mono">{formatSecondPayment(record)}</td>
               <td className="numeric mono">{formatCurrency(record.paidAmount)}</td>
               <td className="numeric mono">{formatCurrency(record.receivableAmount)}</td>
-              <td>{record.tanggal || "-"}</td>
-              <td>
-                {record.reviewFlags.length > 0 ? (
-                  <span className="flag-list">{record.reviewFlags.slice(0, 2).join(", ")}</span>
-                ) : (
-                  <span className="muted">-</span>
-                )}
-              </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function SortableHeader({
+  label,
+  sortKey,
+  activeSort,
+  onSort,
+  numeric = false,
+  sticky = false,
+}: {
+  label: string;
+  sortKey: SortKey;
+  activeSort: SortConfig;
+  onSort: (key: SortKey) => void;
+  numeric?: boolean;
+  sticky?: boolean;
+}) {
+  const isActive = activeSort.key === sortKey;
+  const nextDirection: SortDirection = isActive && activeSort.direction === "asc" ? "desc" : "asc";
+  const orderLabel = numeric
+    ? nextDirection === "asc"
+      ? "paling kecil ke paling besar"
+      : "paling besar ke paling kecil"
+    : nextDirection === "asc"
+      ? "A-Z"
+      : "Z-A";
+
+  return (
+    <th
+      aria-sort={isActive ? (activeSort.direction === "asc" ? "ascending" : "descending") : "none"}
+      className={`${numeric ? "numeric" : ""} ${sticky ? "sticky-col" : ""}`.trim()}
+      scope="col"
+    >
+      <button
+        className="sort-button"
+        type="button"
+        onClick={() => onSort(sortKey)}
+        aria-label={`Urutkan ${label} ${orderLabel}`}
+      >
+        <span>{label}</span>
+        <ArrowUpDown aria-hidden="true" size={14} />
+      </button>
+    </th>
   );
 }
 
@@ -665,6 +763,33 @@ function formatSecondPayment(record: CanonicalRecord) {
   }
 
   return formatCurrency(record.pembayaranKedua);
+}
+
+function compareRecords(first: CanonicalRecord, second: CanonicalRecord, sort: SortConfig) {
+  const firstValue = getSortValue(first, sort.key);
+  const secondValue = getSortValue(second, sort.key);
+  const baseComparison =
+    typeof firstValue === "number" && typeof secondValue === "number"
+      ? firstValue - secondValue
+      : TEXT_COLLATOR.compare(String(firstValue), String(secondValue));
+
+  if (baseComparison !== 0) {
+    return sort.direction === "asc" ? baseComparison : -baseComparison;
+  }
+
+  return TEXT_COLLATOR.compare(first.namaLengkap, second.namaLengkap);
+}
+
+function getSortValue(record: CanonicalRecord, key: SortKey): string | number {
+  if (key === "name") return record.namaLengkap;
+  if (key === "whatsapp") return record.normalizedWhatsapp || record.rawWhatsapp;
+  if (key === "product") return record.productName;
+  if (key === "mechanism") return formatPaymentPlan(record.pilihanPembayaran);
+  if (key === "status") return STATUS_META[record.financialStatus].label;
+  if (key === "firstPayment") return record.pembayaranPertama;
+  if (key === "secondPayment") return record.pembayaranKedua;
+  if (key === "totalPayment") return record.paidAmount;
+  return record.receivableAmount;
 }
 
 function EmptyState({ label }: { label: string }) {

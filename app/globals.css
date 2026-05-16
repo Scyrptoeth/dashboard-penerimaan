@@ -457,12 +457,16 @@ select {
 }
 
 .table-wrap {
+  max-height: min(72vh, 760px);
   overflow-x: auto;
+  overflow-y: auto;
+  position: relative;
 }
 
 table {
-  border-collapse: collapse;
-  min-width: 1520px;
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 1340px;
   width: 100%;
 }
 
@@ -475,10 +479,14 @@ td {
 }
 
 th {
+  background: var(--panel);
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 800;
+  position: sticky;
+  top: 0;
   text-transform: uppercase;
+  z-index: 4;
 }
 
 td strong,
@@ -486,8 +494,77 @@ td small {
   display: block;
 }
 
+tbody td {
+  background: var(--panel);
+}
+
+tbody tr.receivable-row td {
+  background:
+    linear-gradient(90deg, rgba(180, 35, 24, 0.1), rgba(180, 35, 24, 0.025) 34%, var(--panel) 72%);
+}
+
+tbody tr.receivable-row td:first-child {
+  box-shadow:
+    inset 4px 0 0 rgba(180, 35, 24, 0.78),
+    10px 0 28px rgba(180, 35, 24, 0.08);
+}
+
+.sticky-col {
+  left: 0;
+  position: sticky;
+  z-index: 5;
+}
+
+th.sticky-col {
+  z-index: 8;
+}
+
+.name-cell,
+th.sticky-col {
+  min-width: 220px;
+  width: 1%;
+}
+
+.name-cell {
+  max-width: 300px;
+  white-space: nowrap;
+}
+
+.name-cell strong,
+.name-cell small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sort-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  display: inline-flex;
+  font-size: inherit;
+  font-weight: inherit;
+  gap: 6px;
+  justify-content: flex-start;
+  letter-spacing: inherit;
+  min-height: 32px;
+  padding: 0;
+  text-align: inherit;
+  text-transform: inherit;
+  width: 100%;
+}
+
+.sort-button svg {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
 .numeric {
   text-align: right;
+}
+
+.numeric .sort-button {
+  justify-content: flex-end;
 }
 
 .mono {
