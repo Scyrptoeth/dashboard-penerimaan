@@ -46,6 +46,11 @@ label.button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
 button:focus-visible,
 label.button:focus-visible,
 summary:focus-visible,
@@ -386,11 +391,25 @@ select {
   white-space: nowrap;
 }
 
-.tabs {
+.tabs-row {
+  align-items: center;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
   display: flex;
   gap: 8px;
-  overflow-x: auto;
+  justify-content: space-between;
+  margin-top: 16px;
   padding: 16px 0;
+  position: sticky;
+  top: 0;
+  z-index: 12;
+}
+
+.tabs {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 8px;
+  overflow-x: auto;
 }
 
 .tabs button {
@@ -405,6 +424,10 @@ select {
 .tabs button.active {
   background: var(--ink);
   color: #fffdf8;
+}
+
+.table-export {
+  flex: 0 0 auto;
 }
 
 .overview-grid {
@@ -457,9 +480,7 @@ select {
 }
 
 .table-wrap {
-  max-height: min(72vh, 760px);
-  overflow-x: auto;
-  overflow-y: auto;
+  overflow: visible;
   position: relative;
 }
 
@@ -484,7 +505,7 @@ th {
   font-size: 0.78rem;
   font-weight: 800;
   position: sticky;
-  top: 0;
+  top: 76px;
   text-transform: uppercase;
   z-index: 4;
 }
@@ -687,6 +708,20 @@ th.sticky-col {
 
   .product-row {
     grid-template-columns: 1fr;
+  }
+
+  .tabs-row {
+    align-items: stretch;
+    display: grid;
+    top: 0;
+  }
+
+  .table-export {
+    width: 100%;
+  }
+
+  th {
+    top: 128px;
   }
 
   .multi-filter {

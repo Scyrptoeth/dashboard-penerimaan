@@ -8,6 +8,7 @@ import {
   Database,
   Download,
   FileJson,
+  FileSpreadsheet,
   RotateCcw,
   Search,
   Trash2,
@@ -28,6 +29,7 @@ import {
   type FinancialStatus,
   type ImportPreview,
 } from "@/lib/domain";
+import { formatPaymentPlan, formatSecondPayment } from "@/lib/record-display";
 import {
   clearStoredState,
   loadStoredState,
@@ -35,6 +37,7 @@ import {
   saveStoredState,
   saveUndoState,
 } from "@/lib/storage";
+import { buildRecordsXlsxBlob } from "@/lib/xlsx";
 
 type TabId = "overview" | "records" | "receivables" | "products" | "exceptions" | "history";
 type SortDirection = "asc" | "desc";
@@ -94,6 +97,7 @@ export function DashboardClient() {
   const [query, setQuery] = useState("");
   const [statusFilters, setStatusFilters] = useState<FinancialStatus[]>([]);
   const [productFilters, setProductFilters] = useState<string[]>([]);
+  const [recordSort, setRecordSort] = useState<SortConfig>({ key: "totalPayment", direction: "desc" });
   const [notice, setNotice] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [hydrated, setHydrated] = useState(false);
@@ -214,7 +218,7 @@ export function DashboardClient() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `dashboard-penerimaan-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `dashboard-penerimaan-${formatLocalDateStamp()}.json`;
     link.click();
     URL.revokeObjectURL(url);
     setNotice("JSON diekspor.");
@@ -251,6 +255,27 @@ export function DashboardClient() {
       : activeTab === "exceptions"
         ? exceptionRecords
         : filteredRecords;
+  const sortedVisibleRecords = useMemo(
+    () => [...visibleRecords].sort((first, second) => compareRecords(first, second, recordSort)),
+    [recordSort, visibleRecords],
+  );
+
+  function exportXlsx() {
+    if (sortedVisibleRecords.length === 0) {
+      setError("Tidak ada record untuk diekspor ke XLSX.");
+      return;
+    }
+
+    const blob = buildRecordsXlsxBlob(sortedVisibleRecords);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `dashboard-penerimaan-records-${formatLocalDateStamp()}.xlsx`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setNotice(`XLSX diekspor: ${sortedVisibleRecords.length.toLocaleString("id-ID")} record.`);
+    setError("");
+  }
 
   return (
     <main className="shell">
@@ -349,18 +374,29 @@ export function DashboardClient() {
           </button>
         </div>
 
-        <nav className="tabs" aria-label="Tampilan dashboard">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={tab.id === activeTab ? "active" : ""}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
+        <div className="tabs-row">
+          <nav className="tabs" aria-label="Tampilan dashboard">
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={tab.id === activeTab ? "active" : ""}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+          <button
+            className="button table-export"
+            type="button"
+            onClick={exportXlsx}
+            disabled={sortedVisibleRecords.length === 0}
+          >
+            <FileSpreadsheet aria-hidden="true" size={18} />
+            Download XLSX
+          </button>
+        </div>
 
         {activeTab === "overview" && (
           <div className="overview-grid">
@@ -373,7 +409,13 @@ export function DashboardClient() {
         {activeTab === "history" && <ImportHistory state={state} />}
 
         {["records", "receivables", "exceptions"].includes(activeTab) && (
-          <RecordsTable records={visibleRecords} emptyLabel={emptyLabelForTab(activeTab)} />
+          <RecordsTable
+            records={visibleRecords}
+            sortedRecords={sortedVisibleRecords}
+            sort={recordSort}
+            onSort={setRecordSort}
+            emptyLabel={emptyLabelForTab(activeTab)}
+          />
         )}
       </section>
     </main>
@@ -609,22 +651,28 @@ function ImportHistory({ state, compact = false }: { state: DashboardState; comp
   );
 }
 
-function RecordsTable({ records, emptyLabel }: { records: CanonicalRecord[]; emptyLabel: string }) {
-  const [sort, setSort] = useState<SortConfig>({ key: "totalPayment", direction: "desc" });
-  const sortedRecords = useMemo(
-    () => [...records].sort((first, second) => compareRecords(first, second, sort)),
-    [records, sort],
-  );
-
+function RecordsTable({
+  records,
+  sortedRecords,
+  sort,
+  onSort,
+  emptyLabel,
+}: {
+  records: CanonicalRecord[];
+  sortedRecords: CanonicalRecord[];
+  sort: SortConfig;
+  onSort: (sort: SortConfig) => void;
+  emptyLabel: string;
+}) {
   if (records.length === 0) {
     return <EmptyState label={emptyLabel} />;
   }
 
   function toggleSort(key: SortKey) {
-    setSort((current) => ({
+    onSort({
       key,
-      direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
-    }));
+      direction: sort.key === key && sort.direction === "asc" ? "desc" : "asc",
+    });
   }
 
   return (
@@ -747,24 +795,6 @@ function StatusBadge({ status }: { status: FinancialStatus }) {
   return <span className={`badge ${meta.tone}`}>{meta.label}</span>;
 }
 
-function formatPaymentPlan(plan: CanonicalRecord["pilihanPembayaran"]) {
-  if (plan === "lunas") return "1x Pembayaran";
-  if (plan === "cicil") return "2x Pembayaran";
-  return "-";
-}
-
-function formatSecondPayment(record: CanonicalRecord) {
-  if (
-    record.pilihanPembayaran === "lunas" &&
-    record.totalPayment > 0 &&
-    record.pembayaranPertama === record.totalPayment
-  ) {
-    return "Lunas";
-  }
-
-  return formatCurrency(record.pembayaranKedua);
-}
-
 function compareRecords(first: CanonicalRecord, second: CanonicalRecord, sort: SortConfig) {
   const firstValue = getSortValue(first, sort.key);
   const secondValue = getSortValue(second, sort.key);
@@ -790,6 +820,18 @@ function getSortValue(record: CanonicalRecord, key: SortKey): string | number {
   if (key === "secondPayment") return record.pembayaranKedua;
   if (key === "totalPayment") return record.paidAmount;
   return record.receivableAmount;
+}
+
+function formatLocalDateStamp(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function EmptyState({ label }: { label: string }) {
