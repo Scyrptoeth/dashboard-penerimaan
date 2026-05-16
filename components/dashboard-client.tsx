@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Database,
   Download,
   FileJson,
@@ -54,6 +55,8 @@ const STATUS_META: Record<FinancialStatus, { label: string; tone: string }> = {
   excluded_no_payment: { label: "Tanpa bayar", tone: "muted" },
 };
 
+const STATUS_OPTIONS = Object.keys(STATUS_META) as FinancialStatus[];
+
 const DELTA_LABELS = {
   new_record: "Baru",
   payment_improved: "Pembayaran naik",
@@ -68,8 +71,8 @@ export function DashboardClient() {
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<FinancialStatus | "all">("all");
-  const [productFilter, setProductFilter] = useState("all");
+  const [statusFilters, setStatusFilters] = useState<FinancialStatus[]>([]);
+  const [productFilters, setProductFilters] = useState<string[]>([]);
   const [notice, setNotice] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [hydrated, setHydrated] = useState(false);
@@ -97,8 +100,8 @@ export function DashboardClient() {
 
     return metrics.activeRecords
       .filter((record) => {
-        if (statusFilter !== "all" && record.financialStatus !== statusFilter) return false;
-        if (productFilter !== "all" && record.productName !== productFilter) return false;
+        if (statusFilters.length > 0 && !statusFilters.includes(record.financialStatus)) return false;
+        if (productFilters.length > 0 && !productFilters.includes(record.productName)) return false;
         if (!normalizedQuery) return true;
 
         return [
@@ -112,7 +115,7 @@ export function DashboardClient() {
           .some((value) => String(value).toLocaleLowerCase("id-ID").includes(normalizedQuery));
       })
       .sort((a, b) => b.paidAmount - a.paidAmount);
-  }, [metrics.activeRecords, productFilter, query, statusFilter]);
+  }, [metrics.activeRecords, productFilters, query, statusFilters]);
 
   const receivableRecords = useMemo(
     () => filteredRecords.filter((record) => record.receivableAmount > 0),
@@ -297,29 +300,23 @@ export function DashboardClient() {
             />
           </div>
 
-          <label className="select-label">
-            Status
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as FinancialStatus | "all")}>
-              <option value="all">Semua</option>
-              {Object.entries(STATUS_META).map(([status, meta]) => (
-                <option key={status} value={status}>
-                  {meta.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <MultiFilter
+            label="Status"
+            allLabel="Semua"
+            options={STATUS_OPTIONS}
+            selected={statusFilters}
+            onChange={setStatusFilters}
+            getOptionLabel={(status) => STATUS_META[status].label}
+          />
 
-          <label className="select-label">
-            Produk
-            <select value={productFilter} onChange={(event) => setProductFilter(event.target.value)}>
-              <option value="all">Semua produk</option>
-              {productOptions.map((product) => (
-                <option key={product} value={product}>
-                  {product}
-                </option>
-              ))}
-            </select>
-          </label>
+          <MultiFilter
+            label="Produk"
+            allLabel="Semua produk"
+            options={productOptions}
+            selected={productFilters}
+            onChange={setProductFilters}
+            getOptionLabel={(product) => product}
+          />
 
           <button className="button subtle" type="button" onClick={undoLastImport}>
             <RotateCcw aria-hidden="true" size={18} />
@@ -380,6 +377,82 @@ function Kpi({
       <small>{detail}</small>
     </article>
   );
+}
+
+function MultiFilter<T extends string>({
+  label,
+  allLabel,
+  options,
+  selected,
+  onChange,
+  getOptionLabel,
+}: {
+  label: string;
+  allLabel: string;
+  options: T[];
+  selected: T[];
+  onChange: (nextSelected: T[]) => void;
+  getOptionLabel: (option: T) => string;
+}) {
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const summary = summarizeSelection(selected, allLabel, getOptionLabel);
+
+  function toggleOption(option: T) {
+    if (selectedSet.has(option)) {
+      onChange(selected.filter((item) => item !== option));
+      return;
+    }
+
+    onChange([...selected, option]);
+  }
+
+  return (
+    <details className="multi-filter">
+      <summary aria-label={`${label}: ${summary}`}>
+        <span>
+          <small>{label}</small>
+          <strong title={summary}>{summary}</strong>
+        </span>
+        <ChevronDown aria-hidden="true" size={18} />
+      </summary>
+      <div className="multi-filter-menu" role="group" aria-label={`Pilihan ${label}`}>
+        <label className="multi-filter-option">
+          <input
+            type="checkbox"
+            checked={selected.length === 0}
+            onChange={() => onChange([])}
+          />
+          <span>{allLabel}</span>
+        </label>
+        {options.map((option) => {
+          const optionLabel = getOptionLabel(option);
+          return (
+            <label className="multi-filter-option" key={option}>
+              <input
+                type="checkbox"
+                checked={selectedSet.has(option)}
+                onChange={() => toggleOption(option)}
+              />
+              <span title={optionLabel}>{optionLabel}</span>
+            </label>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
+function summarizeSelection<T extends string>(
+  selected: T[],
+  allLabel: string,
+  getOptionLabel: (option: T) => string,
+) {
+  if (selected.length === 0) return allLabel;
+
+  const firstLabel = getOptionLabel(selected[0] as T);
+  if (selected.length === 1) return firstLabel;
+
+  return `${firstLabel} +${selected.length - 1}`;
 }
 
 function ImportPreviewPanel({
@@ -528,9 +601,12 @@ function RecordsTable({ records, emptyLabel }: { records: CanonicalRecord[]; emp
             <th>Nama</th>
             <th>WhatsApp</th>
             <th>Produk</th>
+            <th>Mekanisme</th>
             <th>Status</th>
-            <th className="numeric">Dibayar</th>
-            <th className="numeric">Piutang</th>
+            <th className="numeric">Pembayaran 1</th>
+            <th className="numeric">Pembayaran 2</th>
+            <th className="numeric">Total Pembayaran</th>
+            <th className="numeric">Sisa Pembayaran</th>
             <th>Tanggal</th>
             <th>Review</th>
           </tr>
@@ -544,9 +620,12 @@ function RecordsTable({ records, emptyLabel }: { records: CanonicalRecord[]; emp
               </td>
               <td className="mono">{record.displayWhatsapp || record.rawWhatsapp}</td>
               <td>{record.productName}</td>
+              <td>{formatPaymentPlan(record.pilihanPembayaran)}</td>
               <td>
                 <StatusBadge status={record.financialStatus} />
               </td>
+              <td className="numeric mono">{formatCurrency(record.pembayaranPertama)}</td>
+              <td className="numeric mono">{formatSecondPayment(record)}</td>
               <td className="numeric mono">{formatCurrency(record.paidAmount)}</td>
               <td className="numeric mono">{formatCurrency(record.receivableAmount)}</td>
               <td>{record.tanggal || "-"}</td>
@@ -568,6 +647,24 @@ function RecordsTable({ records, emptyLabel }: { records: CanonicalRecord[]; emp
 function StatusBadge({ status }: { status: FinancialStatus }) {
   const meta = STATUS_META[status];
   return <span className={`badge ${meta.tone}`}>{meta.label}</span>;
+}
+
+function formatPaymentPlan(plan: CanonicalRecord["pilihanPembayaran"]) {
+  if (plan === "lunas") return "1x Pembayaran";
+  if (plan === "cicil") return "2x Pembayaran";
+  return "-";
+}
+
+function formatSecondPayment(record: CanonicalRecord) {
+  if (
+    record.pilihanPembayaran === "lunas" &&
+    record.totalPayment > 0 &&
+    record.pembayaranPertama === record.totalPayment
+  ) {
+    return "Lunas";
+  }
+
+  return formatCurrency(record.pembayaranKedua);
 }
 
 function EmptyState({ label }: { label: string }) {
