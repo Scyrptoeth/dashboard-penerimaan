@@ -110,6 +110,12 @@ h2 {
   gap: 8px;
 }
 
+.export-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .button {
   align-items: center;
   background: var(--panel);
@@ -426,10 +432,6 @@ select {
   color: #fffdf8;
 }
 
-.table-export {
-  flex: 0 0 auto;
-}
-
 .overview-grid {
   display: grid;
   gap: 16px;
@@ -695,10 +697,15 @@ th.sticky-col {
 
   .actions,
   .actions .button,
+  .export-actions,
   .toolbar > *,
   .preview-actions,
   .preview-actions .button {
     width: 100%;
+  }
+
+  .export-actions {
+    display: grid;
   }
 
   .preview-stats,
@@ -714,10 +721,6 @@ th.sticky-col {
     align-items: stretch;
     display: grid;
     top: 0;
-  }
-
-  .table-export {
-    width: 100%;
   }
 
   th {

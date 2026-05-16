@@ -298,10 +298,17 @@ export function DashboardClient() {
           </label>
           <input id="json-upload" className="sr-only" type="file" accept=".json,application/json" onChange={handleJsonInput} />
 
-          <button className="button" type="button" onClick={exportJson}>
-            <Download aria-hidden="true" size={18} />
-            Export JSON
-          </button>
+          <div className="export-actions" aria-label="Ekspor data">
+            <button className="button" type="button" onClick={exportJson}>
+              <Download aria-hidden="true" size={18} />
+              Export JSON
+            </button>
+
+            <button className="button" type="button" onClick={exportXlsx} disabled={sortedVisibleRecords.length === 0}>
+              <FileSpreadsheet aria-hidden="true" size={18} />
+              Download XLSX
+            </button>
+          </div>
         </div>
       </header>
 
@@ -387,15 +394,6 @@ export function DashboardClient() {
               </button>
             ))}
           </nav>
-          <button
-            className="button table-export"
-            type="button"
-            onClick={exportXlsx}
-            disabled={sortedVisibleRecords.length === 0}
-          >
-            <FileSpreadsheet aria-hidden="true" size={18} />
-            Download XLSX
-          </button>
         </div>
 
         {activeTab === "overview" && (
