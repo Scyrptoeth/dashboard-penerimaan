@@ -561,6 +561,14 @@ textarea {
   gap: 8px;
 }
 
+.placeholder-strip button {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  min-height: 0;
+  padding: 0;
+}
+
 .placeholder-strip code {
   background: #fff;
   border: 1px solid var(--line);
@@ -568,7 +576,13 @@ textarea {
   color: var(--accent-strong);
   font-family: var(--font-mono), monospace;
   font-size: 0.78rem;
+  display: inline-flex;
   padding: 6px 9px;
+}
+
+.placeholder-strip button:hover code,
+.placeholder-strip button:focus-visible code {
+  border-color: var(--accent);
 }
 
 .template-row {
@@ -636,6 +650,19 @@ textarea {
 .batch-output {
   display: grid;
   gap: 12px;
+}
+
+.no-payment-table {
+  min-width: 980px;
+}
+
+.no-payment-table th {
+  position: static;
+  top: auto;
+}
+
+.no-payment-panel .table-wrap {
+  overflow-x: auto;
 }
 
 .product-list,

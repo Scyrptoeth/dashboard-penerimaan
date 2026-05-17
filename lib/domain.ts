@@ -20,6 +20,11 @@ const RAW_STATUS_RANK: Record<string, number> = {
   dibatalkan: 1,
 };
 
+const TEXT_COLLATOR = new Intl.Collator("id-ID", {
+  numeric: true,
+  sensitivity: "base",
+});
+
 export type PaymentPlan = "lunas" | "cicil" | "unknown";
 
 export type FinancialStatus =
@@ -77,6 +82,12 @@ export type CanonicalRecord = {
   reviewFlags: string[];
 };
 
+export type NoPaymentProspect = CanonicalRecord & {
+  firstNoPaymentSeenAt: string;
+  lastNoPaymentSeenAt: string;
+  noPaymentImportCount: number;
+};
+
 export type ImportBatch = {
   id: string;
   importedAt: string;
@@ -114,6 +125,7 @@ export type DashboardState = {
   updatedAt: string;
   exportedAt?: string;
   records: Record<string, CanonicalRecord>;
+  noPaymentProspects: Record<string, NoPaymentProspect>;
   imports: ImportBatch[];
   settings: DashboardSettings;
 };
@@ -167,6 +179,15 @@ export const DEFAULT_WA_MESSAGE_TEMPLATES: WaMessageTemplate[] = [
     createdAt: "2026-05-17T00:00:00.000Z",
     updatedAt: "2026-05-17T00:00:00.000Z",
   },
+  {
+    id: "default-no-payment-follow-up",
+    name: "Follow-up belum bayar",
+    body:
+      "Halo Kak {nama}, kami dari Bimbel Persiapantubel melihat pendaftaran untuk produk {produk} belum dilanjutkan ke pembayaran. Apakah Kakak masih ingin melanjutkan pendaftaran? Jika iya, kami siap bantu prosesnya.",
+    builtIn: true,
+    createdAt: "2026-05-17T00:00:00.000Z",
+    updatedAt: "2026-05-17T00:00:00.000Z",
+  },
 ];
 
 export function createDefaultDashboardSettings(): DashboardSettings {
@@ -183,6 +204,7 @@ export function createEmptyState(now = new Date().toISOString()): DashboardState
     createdAt: now,
     updatedAt: now,
     records: {},
+    noPaymentProspects: {},
     imports: [],
     settings: createDefaultDashboardSettings(),
   };
@@ -474,6 +496,7 @@ export function mergeImportPreview(
   now = new Date().toISOString(),
 ): DashboardState {
   const records = { ...state.records };
+  const noPaymentProspects = { ...(state.noPaymentProspects ?? {}) };
 
   for (const delta of preview.deltas) {
     if (
@@ -501,10 +524,14 @@ export function mergeImportPreview(
     };
   }
 
+  mergeNoPaymentCandidates(noPaymentProspects, preview.candidates, preview.batch.id, now);
+  removeConvertedNoPaymentProspects(noPaymentProspects, records);
+
   return {
     ...state,
     updatedAt: now,
     records,
+    noPaymentProspects,
     imports: [...state.imports, preview.batch],
   };
 }
@@ -534,6 +561,7 @@ export function validateImportedState(value: unknown): DashboardState {
     updatedAt: state.updatedAt ?? new Date().toISOString(),
     exportedAt: state.exportedAt,
     records: state.records as Record<string, CanonicalRecord>,
+    noPaymentProspects: normalizeNoPaymentProspects(state.noPaymentProspects),
     imports: state.imports,
     settings: normalizeDashboardSettings(state.settings),
   };
@@ -549,6 +577,15 @@ export function createExportState(state: DashboardState): DashboardState {
 export function getDashboardMetrics(state: DashboardState) {
   const records = Object.values(state.records);
   const activeRecords = records.filter((record) => record.financialStatus !== "excluded_no_payment");
+  const activeWhatsapp = new Set(activeRecords.map((record) => record.normalizedWhatsapp));
+  const noPaymentProspects = Object.values(state.noPaymentProspects ?? {})
+    .filter(
+      (record) =>
+        record.normalizedWhatsapp &&
+        !activeWhatsapp.has(record.normalizedWhatsapp) &&
+        record.paidAmount <= 0,
+    )
+    .sort((a, b) => TEXT_COLLATOR.compare(a.namaLengkap, b.namaLengkap));
   const totalPaid = activeRecords.reduce((sum, record) => sum + record.paidAmount, 0);
   const totalReceivable = activeRecords.reduce((sum, record) => sum + record.receivableAmount, 0);
   const paidOffCount = activeRecords.filter((record) => record.financialStatus === "paid_off").length;
@@ -584,6 +621,7 @@ export function getDashboardMetrics(state: DashboardState) {
 
   return {
     activeRecords,
+    noPaymentProspects,
     totalPaid,
     totalReceivable,
     paidOffCount,
@@ -797,6 +835,102 @@ function hasMetadataChanged(candidate: ImportedCandidate, previous: CanonicalRec
   );
 }
 
+function mergeNoPaymentCandidates(
+  noPaymentProspects: Record<string, NoPaymentProspect>,
+  candidates: ImportedCandidate[],
+  importId: string,
+  now: string,
+) {
+  const grouped = new Map<string, ImportedCandidate>();
+
+  for (const candidate of candidates) {
+    if (
+      candidate.paidAmount > 0 ||
+      !candidate.normalizedWhatsapp ||
+      candidate.reviewFlags.includes("missing_whatsapp") ||
+      candidate.reviewFlags.includes("short_whatsapp") ||
+      candidate.reviewFlags.includes("invalid_whatsapp") ||
+      candidate.reviewFlags.includes("ambiguous_scientific_whatsapp")
+    ) {
+      continue;
+    }
+
+    const current = grouped.get(candidate.normalizedWhatsapp);
+    if (!current || compareNoPaymentCandidates(candidate, current) > 0) {
+      grouped.set(candidate.normalizedWhatsapp, candidate);
+    }
+  }
+
+  for (const candidate of grouped.values()) {
+    const previous = noPaymentProspects[candidate.normalizedWhatsapp];
+    noPaymentProspects[candidate.normalizedWhatsapp] = {
+      ...candidate,
+      id: candidate.normalizedWhatsapp,
+      financialStatus: "excluded_no_payment",
+      firstNoPaymentSeenAt: previous?.firstNoPaymentSeenAt ?? candidate.firstSeenAt,
+      lastNoPaymentSeenAt: now,
+      noPaymentImportCount: (previous?.noPaymentImportCount ?? 0) + 1,
+      firstSeenAt: previous?.firstSeenAt ?? candidate.firstSeenAt,
+      lastSeenAt: now,
+      lastImportId: importId,
+    };
+  }
+}
+
+function removeConvertedNoPaymentProspects(
+  noPaymentProspects: Record<string, NoPaymentProspect>,
+  records: Record<string, CanonicalRecord>,
+) {
+  const paidWhatsapps = new Set(
+    Object.values(records)
+      .filter((record) => record.financialStatus !== "excluded_no_payment" && record.paidAmount > 0)
+      .map((record) => record.normalizedWhatsapp),
+  );
+
+  for (const normalizedWhatsapp of Object.keys(noPaymentProspects)) {
+    if (paidWhatsapps.has(normalizedWhatsapp)) {
+      delete noPaymentProspects[normalizedWhatsapp];
+    }
+  }
+}
+
+function compareNoPaymentCandidates(a: ImportedCandidate, b: ImportedCandidate): number {
+  if (a.reviewFlags.length !== b.reviewFlags.length) return b.reviewFlags.length - a.reviewFlags.length;
+  if (a.completenessScore !== b.completenessScore) return a.completenessScore - b.completenessScore;
+  if (a.parsedDate && b.parsedDate && a.parsedDate !== b.parsedDate) {
+    return TEXT_COLLATOR.compare(a.parsedDate, b.parsedDate);
+  }
+  return a.rowNumber - b.rowNumber;
+}
+
+function normalizeNoPaymentProspects(
+  value: Partial<DashboardState>["noPaymentProspects"] | undefined,
+): Record<string, NoPaymentProspect> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  const prospects: Record<string, NoPaymentProspect> = {};
+
+  for (const [key, prospect] of Object.entries(value)) {
+    if (!prospect || !prospect.normalizedWhatsapp || prospect.paidAmount > 0) {
+      continue;
+    }
+
+    const normalizedWhatsapp = prospect.normalizedWhatsapp || key;
+    prospects[normalizedWhatsapp] = {
+      ...prospect,
+      id: normalizedWhatsapp,
+      financialStatus: "excluded_no_payment",
+      firstNoPaymentSeenAt: prospect.firstNoPaymentSeenAt ?? prospect.firstSeenAt,
+      lastNoPaymentSeenAt: prospect.lastNoPaymentSeenAt ?? prospect.lastSeenAt,
+      noPaymentImportCount: prospect.noPaymentImportCount ?? 1,
+    };
+  }
+
+  return prospects;
+}
+
 function normalizeDashboardSettings(settings: Partial<DashboardSettings> | undefined): DashboardSettings {
   const defaults = createDefaultDashboardSettings();
 
@@ -813,11 +947,17 @@ function normalizeDashboardSettings(settings: Partial<DashboardSettings> | undef
         .map((template, index) => normalizeWaMessageTemplate(template, index))
         .filter((template): template is WaMessageTemplate => Boolean(template))
     : defaults.waMessageTemplates;
+  const templateIds = new Set(waMessageTemplates.map((template) => template.id));
+  const missingDefaultTemplates = defaults.waMessageTemplates.filter(
+    (template) => !templateIds.has(template.id),
+  );
 
   return {
     productAliases,
     waMessageTemplates:
-      waMessageTemplates.length > 0 ? waMessageTemplates : defaults.waMessageTemplates,
+      waMessageTemplates.length > 0
+        ? [...waMessageTemplates, ...missingDefaultTemplates]
+        : defaults.waMessageTemplates,
   };
 }
 

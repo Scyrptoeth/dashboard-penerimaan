@@ -19,7 +19,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import {
   buildImportPreview,
   createEmptyState,
@@ -33,6 +33,7 @@ import {
   type DashboardState,
   type FinancialStatus,
   type ImportPreview,
+  type NoPaymentProspect,
   type WaMessageTemplate,
 } from "@/lib/domain";
 import { formatPaymentPlan, formatSecondPayment } from "@/lib/record-display";
@@ -51,7 +52,15 @@ import {
 } from "@/lib/wa-me";
 import { buildRecordsXlsxBlob } from "@/lib/xlsx";
 
-type TabId = "overview" | "records" | "wa-maker" | "receivables" | "products" | "exceptions" | "history";
+type TabId =
+  | "overview"
+  | "records"
+  | "wa-maker"
+  | "no-payment"
+  | "receivables"
+  | "products"
+  | "exceptions"
+  | "history";
 type WaOutputTab = "individual" | "batch";
 type SortDirection = "asc" | "desc";
 type SortKey =
@@ -73,6 +82,7 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "records", label: "Records" },
   { id: "wa-maker", label: "WA.me Maker" },
+  { id: "no-payment", label: "Tanpa Bayar" },
   { id: "receivables", label: "Piutang" },
   { id: "products", label: "Produk" },
   { id: "exceptions", label: "Exceptions" },
@@ -88,7 +98,9 @@ const STATUS_META: Record<FinancialStatus, { label: string; tone: string }> = {
   excluded_no_payment: { label: "Tanpa bayar", tone: "muted" },
 };
 
-const STATUS_OPTIONS = Object.keys(STATUS_META) as FinancialStatus[];
+const STATUS_OPTIONS = (Object.keys(STATUS_META) as FinancialStatus[]).filter(
+  (status) => status !== "excluded_no_payment",
+);
 
 const DELTA_LABELS = {
   new_record: "Baru",
@@ -508,6 +520,7 @@ export function DashboardClient() {
           {activeTab === "wa-maker" && (
             <WaMeMaker
               records={metrics.activeRecords}
+              noPaymentProspects={metrics.noPaymentProspects}
               templates={state.settings.waMessageTemplates}
               selectedTemplateId={selectedWaTemplateId}
               onTemplateChange={setSelectedWaTemplateId}
@@ -517,6 +530,9 @@ export function DashboardClient() {
               onNotice={setNotice}
               onError={setError}
             />
+          )}
+          {activeTab === "no-payment" && (
+            <NoPaymentTable prospects={metrics.noPaymentProspects} />
           )}
           {activeTab === "products" && <ProductBreakdown products={products} />}
           {activeTab === "history" && <ImportHistory state={state} />}
@@ -552,6 +568,7 @@ type WaProcessedOutput = {
 
 function WaMeMaker({
   records,
+  noPaymentProspects,
   templates,
   selectedTemplateId,
   onTemplateChange,
@@ -562,6 +579,7 @@ function WaMeMaker({
   onError,
 }: {
   records: CanonicalRecord[];
+  noPaymentProspects: NoPaymentProspect[];
   templates: WaMessageTemplate[];
   selectedTemplateId: string;
   onTemplateChange: (templateId: string) => void;
@@ -576,8 +594,12 @@ function WaMeMaker({
   const [draftName, setDraftName] = useState("");
   const [draftBody, setDraftBody] = useState("");
   const [processedOutput, setProcessedOutput] = useState<WaProcessedOutput | null>(null);
+  const draftBodyRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const recipientGroups = useMemo(() => buildWaRecipientGroups(records), [records]);
+  const recipientGroups = useMemo(
+    () => buildWaRecipientGroups(records, noPaymentProspects),
+    [noPaymentProspects, records],
+  );
   const selectedGroup =
     recipientGroups.find((group) => group.id === recipientGroupId) ?? recipientGroups[0];
   const selectedTemplate =
@@ -623,6 +645,27 @@ function WaMeMaker({
       setDraftName("");
       setDraftBody("");
     }
+  }
+
+  function insertPlaceholder(placeholder: string) {
+    const token = `{${placeholder}}`;
+    const textarea = draftBodyRef.current;
+
+    if (!textarea) {
+      setDraftBody((current) => `${current}${token}`);
+      return;
+    }
+
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const nextBody = `${draftBody.slice(0, start)}${token}${draftBody.slice(end)}`;
+
+    setDraftBody(nextBody);
+    window.requestAnimationFrame(() => {
+      textarea.focus();
+      const cursor = start + token.length;
+      textarea.setSelectionRange(cursor, cursor);
+    });
   }
 
   return (
@@ -728,7 +771,14 @@ function WaMeMaker({
 
           <div className="placeholder-strip" aria-label="Placeholder tersedia">
             {WA_TEMPLATE_PLACEHOLDERS.map((placeholder) => (
-              <code key={placeholder}>{`{${placeholder}}`}</code>
+              <button
+                key={placeholder}
+                type="button"
+                onClick={() => insertPlaceholder(placeholder)}
+                aria-label={`Tambahkan placeholder ${placeholder}`}
+              >
+                <code>{`{${placeholder}}`}</code>
+              </button>
             ))}
           </div>
 
@@ -746,6 +796,7 @@ function WaMeMaker({
               <span>Isi template baru</span>
               <textarea
                 id="wa-template-body"
+                ref={draftBodyRef}
                 value={draftBody}
                 onChange={(event) => setDraftBody(event.target.value)}
                 rows={5}
@@ -931,8 +982,64 @@ function WaMeOutput({
   );
 }
 
-function buildWaRecipientGroups(records: CanonicalRecord[]): WaRecipientGroup[] {
+function NoPaymentTable({ prospects }: { prospects: NoPaymentProspect[] }) {
+  if (prospects.length === 0) {
+    return (
+      <EmptyState label="Tidak ada calon siswa tanpa bayar yang masih perlu dihubungi." />
+    );
+  }
+
+  return (
+    <section className="panel no-payment-panel" aria-label="Calon siswa tanpa bayar">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Tanpa Bayar</p>
+          <h2>Calon siswa yang belum melakukan pembayaran</h2>
+        </div>
+        <span className="badge muted">{prospects.length.toLocaleString("id-ID")} record</span>
+      </div>
+
+      <div className="table-wrap">
+        <table className="no-payment-table">
+          <thead>
+            <tr>
+              <th scope="col">Nama</th>
+              <th scope="col">WhatsApp</th>
+              <th scope="col">Produk</th>
+              <th scope="col">Tanggal</th>
+              <th scope="col">Import terakhir</th>
+              <th scope="col" className="numeric">Frekuensi</th>
+            </tr>
+          </thead>
+          <tbody>
+            {prospects.map((record) => (
+              <tr key={record.normalizedWhatsapp}>
+                <td className="name-cell">
+                  <strong>{record.namaLengkap || "Tanpa nama"}</strong>
+                  <small>{record.rawPaymentStatus || "raw status kosong"}</small>
+                </td>
+                <td className="mono">{record.displayWhatsapp || record.rawWhatsapp}</td>
+                <td>{record.productName || "-"}</td>
+                <td>{record.tanggal || "-"}</td>
+                <td>{new Date(record.lastNoPaymentSeenAt).toLocaleString("id-ID")}</td>
+                <td className="numeric mono">{record.noPaymentImportCount.toLocaleString("id-ID")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function buildWaRecipientGroups(
+  records: CanonicalRecord[],
+  noPaymentProspects: NoPaymentProspect[],
+): WaRecipientGroup[] {
   const activeRecords = [...records].sort((first, second) =>
+    TEXT_COLLATOR.compare(first.namaLengkap, second.namaLengkap),
+  );
+  const sortedNoPaymentProspects = [...noPaymentProspects].sort((first, second) =>
     TEXT_COLLATOR.compare(first.namaLengkap, second.namaLengkap),
   );
   const receivableRecords = activeRecords.filter((record) => record.receivableAmount > 0);
@@ -962,6 +1069,12 @@ function buildWaRecipientGroups(records: CanonicalRecord[]): WaRecipientGroup[] 
       label: "Siswa Belum Lunas",
       detail: `${receivableRecords.length.toLocaleString("id-ID")} record dengan sisa pembayaran`,
       records: receivableRecords,
+    },
+    {
+      id: "no-payment",
+      label: "Tanpa Bayar",
+      detail: `${sortedNoPaymentProspects.length.toLocaleString("id-ID")} calon siswa belum bayar`,
+      records: sortedNoPaymentProspects,
     },
     ...[...products.entries()]
       .sort(([, first], [, second]) => TEXT_COLLATOR.compare(first.label, second.label))

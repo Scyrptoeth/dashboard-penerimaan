@@ -150,6 +150,52 @@ describe("dedupe and merge", () => {
     expect(lower.deltas[0]?.kind).toBe("unchanged");
     expect(lower.deltas[0]?.ignoredReason).toContain("lower");
   });
+
+  it("keeps no-payment prospects only until the same WhatsApp becomes paid", () => {
+    const initialPreview = buildImportPreview(
+      csv(["081234567890,Ayu,PKN STAN,100000,21/03/2026,cicil,,0,,proses,sendiri,"]),
+      "first.csv",
+      createEmptyState("2026-05-16T00:00:00.000Z"),
+      "2026-05-16T00:00:00.000Z",
+    );
+    const stateWithProspect = mergeImportPreview(
+      createEmptyState("2026-05-16T00:00:00.000Z"),
+      initialPreview,
+      "2026-05-16T00:00:00.000Z",
+    );
+
+    expect(Object.keys(stateWithProspect.noPaymentProspects)).toEqual(["6281234567890"]);
+
+    const paidPreview = buildImportPreview(
+      csv(["081234567890,Ayu,PKN STAN VOL. 2,100000,22/03/2026,cicil,50000,0,,selesai,sendiri,"]),
+      "second.csv",
+      stateWithProspect,
+      "2026-05-17T00:00:00.000Z",
+    );
+    const paidState = mergeImportPreview(stateWithProspect, paidPreview, "2026-05-17T00:00:00.000Z");
+
+    expect(Object.keys(paidState.noPaymentProspects)).toEqual([]);
+  });
+
+  it("groups repeated no-payment rows by WhatsApp only", () => {
+    const preview = buildImportPreview(
+      csv([
+        "081234567890,Ayu,PKN STAN,100000,21/03/2026,cicil,0,0,,proses,sendiri,",
+        "081234567890,Ayu Pratiwi,BPKP,200000,22/03/2026,cicil,0,0,,proses,sendiri,",
+      ]),
+      "first.csv",
+      createEmptyState("2026-05-16T00:00:00.000Z"),
+      "2026-05-16T00:00:00.000Z",
+    );
+    const state = mergeImportPreview(
+      createEmptyState("2026-05-16T00:00:00.000Z"),
+      preview,
+      "2026-05-16T00:00:00.000Z",
+    );
+
+    expect(Object.keys(state.noPaymentProspects)).toHaveLength(1);
+    expect(state.noPaymentProspects["6281234567890"]?.productName).toBe("BPKP");
+  });
 });
 
 describe("state transport", () => {
@@ -170,7 +216,35 @@ describe("state transport", () => {
 
     const imported = validateImportedState(legacyState);
 
-    expect(imported.settings.waMessageTemplates).toHaveLength(2);
+    expect(imported.settings.waMessageTemplates).toHaveLength(3);
     expect(imported.settings.waMessageTemplates[0]?.name).toBe("Pengingat pelunasan sopan");
+    expect(imported.settings.waMessageTemplates[2]?.name).toBe("Follow-up belum bayar");
+  });
+
+  it("adds missing built-in WA templates to existing settings", () => {
+    const state = createEmptyState("2026-05-16T00:00:00.000Z");
+    const existingState = {
+      ...state,
+      settings: {
+        ...state.settings,
+        waMessageTemplates: state.settings.waMessageTemplates.slice(0, 2),
+      },
+    };
+
+    const imported = validateImportedState(existingState);
+
+    expect(imported.settings.waMessageTemplates.map((template) => template.id)).toContain(
+      "default-no-payment-follow-up",
+    );
+  });
+
+  it("hydrates missing no-payment prospects for legacy state", () => {
+    const state = createEmptyState("2026-05-16T00:00:00.000Z");
+    const legacyState = { ...state };
+    delete (legacyState as Partial<typeof state>).noPaymentProspects;
+
+    const imported = validateImportedState(legacyState);
+
+    expect(imported.noPaymentProspects).toEqual({});
   });
 });
