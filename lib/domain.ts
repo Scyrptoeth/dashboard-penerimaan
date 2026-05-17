@@ -93,8 +93,18 @@ export type ImportBatch = {
   exceptionCount: number;
 };
 
+export type WaMessageTemplate = {
+  id: string;
+  name: string;
+  body: string;
+  builtIn: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type DashboardSettings = {
   productAliases: Record<string, string>;
+  waMessageTemplates: WaMessageTemplate[];
 };
 
 export type DashboardState = {
@@ -138,6 +148,34 @@ type MoneyParseResult = {
   invalid: boolean;
 };
 
+export const DEFAULT_WA_MESSAGE_TEMPLATES: WaMessageTemplate[] = [
+  {
+    id: "default-polite-receivable",
+    name: "Pengingat pelunasan sopan",
+    body:
+      "Assalamu'alaikum Kak {nama}, kami dari Bimbel Persiapantubel ingin mengingatkan bahwa masih ada sisa pembayaran untuk produk {produk} sebesar {sisaPembayaran}. Mohon konfirmasi rencana pelunasannya ya. Terima kasih.",
+    builtIn: true,
+    createdAt: "2026-05-17T00:00:00.000Z",
+    updatedAt: "2026-05-17T00:00:00.000Z",
+  },
+  {
+    id: "default-short-installment",
+    name: "Follow-up cicilan singkat",
+    body:
+      "Halo Kak {nama}, follow-up cicilan {produk}. Sisa pembayaran saat ini {sisaPembayaran}. Jika sudah melakukan pembayaran, mohon kirimkan bukti transfer ya. Terima kasih.",
+    builtIn: true,
+    createdAt: "2026-05-17T00:00:00.000Z",
+    updatedAt: "2026-05-17T00:00:00.000Z",
+  },
+];
+
+export function createDefaultDashboardSettings(): DashboardSettings {
+  return {
+    productAliases: {},
+    waMessageTemplates: DEFAULT_WA_MESSAGE_TEMPLATES.map((template) => ({ ...template })),
+  };
+}
+
 export function createEmptyState(now = new Date().toISOString()): DashboardState {
   return {
     schemaVersion: STATE_SCHEMA_VERSION,
@@ -146,9 +184,7 @@ export function createEmptyState(now = new Date().toISOString()): DashboardState
     updatedAt: now,
     records: {},
     imports: [],
-    settings: {
-      productAliases: {},
-    },
+    settings: createDefaultDashboardSettings(),
   };
 }
 
@@ -499,7 +535,7 @@ export function validateImportedState(value: unknown): DashboardState {
     exportedAt: state.exportedAt,
     records: state.records as Record<string, CanonicalRecord>,
     imports: state.imports,
-    settings: state.settings ?? { productAliases: {} },
+    settings: normalizeDashboardSettings(state.settings),
   };
 }
 
@@ -759,6 +795,59 @@ function hasMetadataChanged(candidate: ImportedCandidate, previous: CanonicalRec
     candidate.vouchers !== previous.vouchers ||
     candidate.jenisPendaftaran !== previous.jenisPendaftaran
   );
+}
+
+function normalizeDashboardSettings(settings: Partial<DashboardSettings> | undefined): DashboardSettings {
+  const defaults = createDefaultDashboardSettings();
+
+  if (!settings || typeof settings !== "object") {
+    return defaults;
+  }
+
+  const productAliases =
+    settings.productAliases && typeof settings.productAliases === "object"
+      ? { ...settings.productAliases }
+      : {};
+  const waMessageTemplates = Array.isArray(settings.waMessageTemplates)
+    ? settings.waMessageTemplates
+        .map((template, index) => normalizeWaMessageTemplate(template, index))
+        .filter((template): template is WaMessageTemplate => Boolean(template))
+    : defaults.waMessageTemplates;
+
+  return {
+    productAliases,
+    waMessageTemplates:
+      waMessageTemplates.length > 0 ? waMessageTemplates : defaults.waMessageTemplates,
+  };
+}
+
+function normalizeWaMessageTemplate(
+  value: unknown,
+  index: number,
+): WaMessageTemplate | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const template = value as Partial<WaMessageTemplate>;
+  const name = String(template.name ?? "").trim();
+  const body = String(template.body ?? "").trim();
+
+  if (!name || !body) {
+    return null;
+  }
+
+  const id = String(template.id ?? "").trim() || `imported-wa-template-${index + 1}`;
+  const now = new Date().toISOString();
+
+  return {
+    id,
+    name,
+    body,
+    builtIn: Boolean(template.builtIn),
+    createdAt: String(template.createdAt ?? now),
+    updatedAt: String(template.updatedAt ?? template.createdAt ?? now),
+  };
 }
 
 function parsePaymentPlan(rawValue: unknown): PaymentPlan {

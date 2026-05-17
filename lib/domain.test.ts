@@ -158,4 +158,19 @@ describe("state transport", () => {
     expect(validateImportedState(JSON.parse(JSON.stringify(state))).schemaVersion).toBe(1);
     expect(() => validateImportedState({ ...state, schemaVersion: 999 })).toThrow();
   });
+
+  it("hydrates default WA templates for legacy settings", () => {
+    const state = createEmptyState("2026-05-16T00:00:00.000Z");
+    const legacyState = {
+      ...state,
+      settings: {
+        productAliases: {},
+      },
+    };
+
+    const imported = validateImportedState(legacyState);
+
+    expect(imported.settings.waMessageTemplates).toHaveLength(2);
+    expect(imported.settings.waMessageTemplates[0]?.name).toBe("Pengingat pelunasan sopan");
+  });
 });

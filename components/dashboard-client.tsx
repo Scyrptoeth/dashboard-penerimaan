@@ -5,11 +5,15 @@ import {
   ArrowUpDown,
   CheckCircle2,
   ChevronDown,
+  Copy,
   Database,
   Download,
+  ExternalLink,
   FileJson,
   FileSpreadsheet,
+  MessageCircle,
   RotateCcw,
+  Save,
   Search,
   Trash2,
   Upload,
@@ -20,6 +24,7 @@ import {
   buildImportPreview,
   createEmptyState,
   createExportState,
+  DEFAULT_WA_MESSAGE_TEMPLATES,
   formatCurrency,
   getDashboardMetrics,
   mergeImportPreview,
@@ -28,6 +33,7 @@ import {
   type DashboardState,
   type FinancialStatus,
   type ImportPreview,
+  type WaMessageTemplate,
 } from "@/lib/domain";
 import { formatPaymentPlan, formatSecondPayment } from "@/lib/record-display";
 import {
@@ -37,9 +43,16 @@ import {
   saveStoredState,
   saveUndoState,
 } from "@/lib/storage";
+import {
+  buildWaMeDraft,
+  formatWaMeBatchLine,
+  WA_TEMPLATE_PLACEHOLDERS,
+  type WaMeDraft,
+} from "@/lib/wa-me";
 import { buildRecordsXlsxBlob } from "@/lib/xlsx";
 
-type TabId = "overview" | "records" | "receivables" | "products" | "exceptions" | "history";
+type TabId = "overview" | "records" | "wa-maker" | "receivables" | "products" | "exceptions" | "history";
+type WaOutputTab = "individual" | "batch";
 type SortDirection = "asc" | "desc";
 type SortKey =
   | "name"
@@ -59,6 +72,7 @@ type SortConfig = {
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "records", label: "Records" },
+  { id: "wa-maker", label: "WA.me Maker" },
   { id: "receivables", label: "Piutang" },
   { id: "products", label: "Produk" },
   { id: "exceptions", label: "Exceptions" },
@@ -98,6 +112,9 @@ export function DashboardClient() {
   const [statusFilters, setStatusFilters] = useState<FinancialStatus[]>([]);
   const [productFilters, setProductFilters] = useState<string[]>([]);
   const [recordSort, setRecordSort] = useState<SortConfig>({ key: "totalPayment", direction: "desc" });
+  const [selectedWaTemplateId, setSelectedWaTemplateId] = useState(
+    DEFAULT_WA_MESSAGE_TEMPLATES[0]?.id ?? "",
+  );
   const [notice, setNotice] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [hydrated, setHydrated] = useState(false);
@@ -112,6 +129,13 @@ export function DashboardClient() {
       saveStoredState(state);
     }
   }, [hydrated, state]);
+
+  useEffect(() => {
+    const templates = state.settings.waMessageTemplates;
+    if (templates.length > 0 && !templates.some((template) => template.id === selectedWaTemplateId)) {
+      setSelectedWaTemplateId(templates[0]?.id ?? "");
+    }
+  }, [selectedWaTemplateId, state.settings.waMessageTemplates]);
 
   const metrics = useMemo(() => getDashboardMetrics(state), [state]);
   const products = metrics.byProduct;
@@ -249,6 +273,74 @@ export function DashboardClient() {
     setError("");
   }
 
+  async function copyTextToClipboard(text: string, successMessage: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setNotice(successMessage);
+      setError("");
+    } catch {
+      setError("Gagal menyalin ke clipboard. Coba gunakan browser dengan izin clipboard aktif.");
+    }
+  }
+
+  function saveWaTemplate(name: string, body: string) {
+    const trimmedName = name.trim();
+    const trimmedBody = body.trim();
+
+    if (!trimmedName || !trimmedBody) {
+      setError("Nama dan isi template WA wajib diisi.");
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const template: WaMessageTemplate = {
+      id: `wa-template-${Date.now().toString(36)}`,
+      name: trimmedName,
+      body: trimmedBody,
+      builtIn: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setState((current) => ({
+      ...current,
+      updatedAt: now,
+      settings: {
+        ...current.settings,
+        waMessageTemplates: [...current.settings.waMessageTemplates, template],
+      },
+    }));
+    setSelectedWaTemplateId(template.id);
+    setNotice(`Template WA disimpan: ${template.name}`);
+    setError("");
+  }
+
+  function deleteWaTemplate(templateId: string) {
+    const template = state.settings.waMessageTemplates.find((item) => item.id === templateId);
+
+    if (!template) return;
+
+    if (template.builtIn) {
+      setError("Template bawaan tidak dapat dihapus.");
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const nextTemplates = state.settings.waMessageTemplates.filter((item) => item.id !== templateId);
+
+    setState((current) => ({
+      ...current,
+      updatedAt: now,
+      settings: {
+        ...current.settings,
+        waMessageTemplates: nextTemplates,
+      },
+    }));
+    setSelectedWaTemplateId(nextTemplates[0]?.id ?? "");
+    setNotice(`Template WA dihapus: ${template.name}`);
+    setError("");
+  }
+
   const visibleRecords =
     activeTab === "receivables"
       ? receivableRecords
@@ -382,11 +474,15 @@ export function DashboardClient() {
         </div>
 
         <div className="tabs-row">
-          <nav className="tabs" aria-label="Tampilan dashboard">
+          <nav className="tabs" aria-label="Tampilan dashboard" role="tablist">
             {TABS.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
+                id={`tab-${tab.id}`}
+                role="tab"
+                aria-selected={tab.id === activeTab}
+                aria-controls={`panel-${tab.id}`}
                 className={tab.id === activeTab ? "active" : ""}
                 onClick={() => setActiveTab(tab.id)}
               >
@@ -396,28 +492,486 @@ export function DashboardClient() {
           </nav>
         </div>
 
-        {activeTab === "overview" && (
-          <div className="overview-grid">
-            <ProductBreakdown products={products} />
-            <ImportHistory state={state} compact />
-          </div>
-        )}
+        <div
+          className="tab-panel"
+          role="tabpanel"
+          id={`panel-${activeTab}`}
+          aria-labelledby={`tab-${activeTab}`}
+        >
+          {activeTab === "overview" && (
+            <div className="overview-grid">
+              <ProductBreakdown products={products} />
+              <ImportHistory state={state} compact />
+            </div>
+          )}
 
-        {activeTab === "products" && <ProductBreakdown products={products} />}
-        {activeTab === "history" && <ImportHistory state={state} />}
+          {activeTab === "wa-maker" && (
+            <WaMeMaker
+              records={metrics.activeRecords}
+              templates={state.settings.waMessageTemplates}
+              selectedTemplateId={selectedWaTemplateId}
+              onTemplateChange={setSelectedWaTemplateId}
+              onSaveTemplate={saveWaTemplate}
+              onDeleteTemplate={deleteWaTemplate}
+              onCopyText={copyTextToClipboard}
+              onNotice={setNotice}
+              onError={setError}
+            />
+          )}
+          {activeTab === "products" && <ProductBreakdown products={products} />}
+          {activeTab === "history" && <ImportHistory state={state} />}
 
-        {["records", "receivables", "exceptions"].includes(activeTab) && (
-          <RecordsTable
-            records={visibleRecords}
-            sortedRecords={sortedVisibleRecords}
-            sort={recordSort}
-            onSort={setRecordSort}
-            emptyLabel={emptyLabelForTab(activeTab)}
-          />
-        )}
+          {["records", "receivables", "exceptions"].includes(activeTab) && (
+            <RecordsTable
+              records={visibleRecords}
+              sortedRecords={sortedVisibleRecords}
+              sort={recordSort}
+              onSort={setRecordSort}
+              emptyLabel={emptyLabelForTab(activeTab)}
+            />
+          )}
+        </div>
       </section>
     </main>
   );
+}
+
+type WaRecipientGroup = {
+  id: string;
+  label: string;
+  detail: string;
+  records: CanonicalRecord[];
+};
+
+type WaProcessedOutput = {
+  groupLabel: string;
+  templateName: string;
+  processedAt: string;
+  drafts: WaMeDraft[];
+};
+
+function WaMeMaker({
+  records,
+  templates,
+  selectedTemplateId,
+  onTemplateChange,
+  onSaveTemplate,
+  onDeleteTemplate,
+  onCopyText,
+  onNotice,
+  onError,
+}: {
+  records: CanonicalRecord[];
+  templates: WaMessageTemplate[];
+  selectedTemplateId: string;
+  onTemplateChange: (templateId: string) => void;
+  onSaveTemplate: (name: string, body: string) => void;
+  onDeleteTemplate: (templateId: string) => void;
+  onCopyText: (text: string, successMessage: string) => void | Promise<void>;
+  onNotice: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const [recipientGroupId, setRecipientGroupId] = useState("receivable");
+  const [outputTab, setOutputTab] = useState<WaOutputTab>("individual");
+  const [draftName, setDraftName] = useState("");
+  const [draftBody, setDraftBody] = useState("");
+  const [processedOutput, setProcessedOutput] = useState<WaProcessedOutput | null>(null);
+
+  const recipientGroups = useMemo(() => buildWaRecipientGroups(records), [records]);
+  const selectedGroup =
+    recipientGroups.find((group) => group.id === recipientGroupId) ?? recipientGroups[0];
+  const selectedTemplate =
+    templates.find((template) => template.id === selectedTemplateId) ?? templates[0];
+  const previewDrafts = useMemo(
+    () =>
+      selectedGroup && selectedTemplate
+        ? selectedGroup.records.map((record) => buildWaMeDraft(record, selectedTemplate.body))
+        : [],
+    [selectedGroup, selectedTemplate],
+  );
+  const previewValidCount = previewDrafts.filter((draft) => draft.ok).length;
+  const previewInvalidCount = previewDrafts.length - previewValidCount;
+
+  useEffect(() => {
+    if (selectedGroup) return;
+    setRecipientGroupId(recipientGroups[0]?.id ?? "all");
+  }, [recipientGroups, selectedGroup]);
+
+  function processLinks() {
+    if (!selectedGroup || !selectedTemplate) {
+      onError("Pilih kategori nomor WA dan template pesan terlebih dahulu.");
+      return;
+    }
+
+    const drafts = selectedGroup.records.map((record) => buildWaMeDraft(record, selectedTemplate.body));
+    const validCount = drafts.filter((draft) => draft.ok).length;
+
+    setProcessedOutput({
+      groupLabel: selectedGroup.label,
+      templateName: selectedTemplate.name,
+      processedAt: new Date().toISOString(),
+      drafts,
+    });
+    setOutputTab("individual");
+    onNotice(`WA.me diproses: ${validCount.toLocaleString("id-ID")} link siap.`);
+    onError("");
+  }
+
+  function saveTemplate() {
+    onSaveTemplate(draftName, draftBody);
+    if (draftName.trim() && draftBody.trim()) {
+      setDraftName("");
+      setDraftBody("");
+    }
+  }
+
+  return (
+    <section className="wa-maker" aria-label="WA.me Maker">
+      <div className="wa-maker-grid">
+        <section className="panel wa-panel" aria-label="Nomor WA tujuan">
+          <div className="panel-head">
+            <div>
+              <p className="eyebrow">Nomor WA Tujuan</p>
+              <h2>Pilih kategori penerima</h2>
+            </div>
+            <MessageCircle aria-hidden="true" size={22} />
+          </div>
+
+          <label className="form-field" htmlFor="wa-recipient-group">
+            <span>Kategori</span>
+            <select
+              id="wa-recipient-group"
+              value={selectedGroup?.id ?? ""}
+              onChange={(event) => setRecipientGroupId(event.target.value)}
+            >
+              {recipientGroups.map((group) => (
+                <option key={group.id} value={group.id}>
+                  {group.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="wa-stats" aria-label="Ringkasan penerima">
+            <div>
+              <span>Total penerima</span>
+              <strong>{(selectedGroup?.records.length ?? 0).toLocaleString("id-ID")}</strong>
+            </div>
+            <div>
+              <span>Siap link</span>
+              <strong>{previewValidCount.toLocaleString("id-ID")}</strong>
+            </div>
+            <div>
+              <span>Dilewati</span>
+              <strong>{previewInvalidCount.toLocaleString("id-ID")}</strong>
+            </div>
+          </div>
+
+          <div className="wa-preview-list" aria-label="Preview penerima">
+            {(selectedGroup?.records ?? []).slice(0, 6).map((record) => (
+              <article key={record.id}>
+                <strong>{record.namaLengkap || "Tanpa nama"}</strong>
+                <span>
+                  {record.displayWhatsapp || record.rawWhatsapp} · {record.productName}
+                </span>
+              </article>
+            ))}
+            {selectedGroup && selectedGroup.records.length > 6 && (
+              <p className="muted">
+                +{(selectedGroup.records.length - 6).toLocaleString("id-ID")} penerima lain
+              </p>
+            )}
+            {!selectedGroup || selectedGroup.records.length === 0 ? (
+              <EmptyState label="Belum ada penerima pada kategori ini." />
+            ) : null}
+          </div>
+        </section>
+
+        <section className="panel wa-panel" aria-label="Pesan yang ingin dipersonalisasi">
+          <div className="panel-head">
+            <div>
+              <p className="eyebrow">Pesan yang Ingin Dipersonalisasi</p>
+              <h2>Pilih atau simpan template</h2>
+            </div>
+          </div>
+
+          <div className="template-row">
+            <label className="form-field" htmlFor="wa-template">
+              <span>Template</span>
+              <select
+                id="wa-template"
+                value={selectedTemplate?.id ?? ""}
+                onChange={(event) => onTemplateChange(event.target.value)}
+              >
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="button danger"
+              type="button"
+              onClick={() => selectedTemplate && onDeleteTemplate(selectedTemplate.id)}
+              disabled={!selectedTemplate || selectedTemplate.builtIn}
+            >
+              <Trash2 aria-hidden="true" size={18} />
+              Hapus
+            </button>
+          </div>
+
+          <div className="message-preview">
+            <span>Isi template terpilih</span>
+            <p>{selectedTemplate?.body ?? "Belum ada template."}</p>
+          </div>
+
+          <div className="placeholder-strip" aria-label="Placeholder tersedia">
+            {WA_TEMPLATE_PLACEHOLDERS.map((placeholder) => (
+              <code key={placeholder}>{`{${placeholder}}`}</code>
+            ))}
+          </div>
+
+          <div className="template-editor">
+            <label className="form-field" htmlFor="wa-template-name">
+              <span>Nama template baru</span>
+              <input
+                id="wa-template-name"
+                value={draftName}
+                onChange={(event) => setDraftName(event.target.value)}
+                placeholder="Contoh: Reminder H-3 pelunasan"
+              />
+            </label>
+            <label className="form-field" htmlFor="wa-template-body">
+              <span>Isi template baru</span>
+              <textarea
+                id="wa-template-body"
+                value={draftBody}
+                onChange={(event) => setDraftBody(event.target.value)}
+                rows={5}
+                placeholder="Halo Kak {nama}, sisa pembayaran {produk} adalah {sisaPembayaran}."
+              />
+            </label>
+            <button className="button" type="button" onClick={saveTemplate}>
+              <Save aria-hidden="true" size={18} />
+              Simpan Template
+            </button>
+          </div>
+        </section>
+      </div>
+
+      <section className="panel wa-process" aria-label="Proses WA.me">
+        <div>
+          <p className="eyebrow">Proses</p>
+          <h2>Gabungkan kategori dan template</h2>
+          <p className="muted">
+            {selectedGroup?.detail ?? "Belum ada kategori"} · {selectedTemplate?.name ?? "Belum ada template"}
+          </p>
+        </div>
+        <button
+          className="button primary"
+          type="button"
+          onClick={processLinks}
+          disabled={!selectedGroup || !selectedTemplate || previewDrafts.length === 0}
+        >
+          <MessageCircle aria-hidden="true" size={18} />
+          Proses WA.me
+        </button>
+      </section>
+
+      <WaMeOutput
+        output={processedOutput}
+        outputTab={outputTab}
+        onOutputTabChange={setOutputTab}
+        onCopyText={onCopyText}
+        onError={onError}
+      />
+    </section>
+  );
+}
+
+function WaMeOutput({
+  output,
+  outputTab,
+  onOutputTabChange,
+  onCopyText,
+  onError,
+}: {
+  output: WaProcessedOutput | null;
+  outputTab: WaOutputTab;
+  onOutputTabChange: (tab: WaOutputTab) => void;
+  onCopyText: (text: string, successMessage: string) => void | Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const validDrafts = output?.drafts.filter((draft) => draft.ok) ?? [];
+  const skippedDrafts = output?.drafts.filter((draft) => !draft.ok) ?? [];
+  const unknownPlaceholders = [
+    ...new Set(output?.drafts.flatMap((draft) => draft.unknownPlaceholders) ?? []),
+  ];
+  const batchText = validDrafts.map(formatWaMeBatchLine).join("\n");
+
+  function copyBatch() {
+    if (!batchText) {
+      onError("Belum ada link batch yang bisa disalin.");
+      return;
+    }
+
+    void onCopyText(batchText, `Batch disalin: ${validDrafts.length.toLocaleString("id-ID")} link.`);
+  }
+
+  return (
+    <section className="panel wa-output" aria-label="Output WA.me">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Output</p>
+          <h2>Link WA.me personal</h2>
+        </div>
+        {output && (
+          <span className="muted">
+            {output.groupLabel} · {new Date(output.processedAt).toLocaleString("id-ID")}
+          </span>
+        )}
+      </div>
+
+      <div className="mini-tabs" role="tablist" aria-label="Jenis output WA.me">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={outputTab === "individual"}
+          className={outputTab === "individual" ? "active" : ""}
+          onClick={() => onOutputTabChange("individual")}
+        >
+          Individu
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={outputTab === "batch"}
+          className={outputTab === "batch" ? "active" : ""}
+          onClick={() => onOutputTabChange("batch")}
+        >
+          Batch
+        </button>
+      </div>
+
+      {!output ? (
+        <EmptyState label="Pilih kategori dan template, lalu proses untuk membuat link WA.me." />
+      ) : (
+        <>
+          <div className="wa-output-summary">
+            <span>{validDrafts.length.toLocaleString("id-ID")} link siap</span>
+            <span>{skippedDrafts.length.toLocaleString("id-ID")} dilewati</span>
+            <span>Template: {output.templateName}</span>
+          </div>
+
+          {unknownPlaceholders.length > 0 && (
+            <div className="warning-list" role="alert">
+              <p>Placeholder tidak dikenal tetap dibiarkan: {unknownPlaceholders.join(", ")}</p>
+            </div>
+          )}
+
+          {skippedDrafts.length > 0 && (
+            <div className="warning-list" role="alert">
+              <p>
+                {skippedDrafts.length.toLocaleString("id-ID")} record dilewati karena nomor WA tidak
+                valid untuk wa.me.
+              </p>
+            </div>
+          )}
+
+          {outputTab === "individual" ? (
+            <div className="wa-link-list">
+              {validDrafts.length === 0 ? (
+                <EmptyState label="Tidak ada link individu yang valid." />
+              ) : (
+                validDrafts.map((draft) => (
+                  <article key={draft.record.id} className="wa-link-row">
+                    <div>
+                      <strong>{draft.record.namaLengkap || "Tanpa nama"}</strong>
+                      <span>
+                        {draft.record.displayWhatsapp} · {draft.record.productName}
+                      </span>
+                      <small className="mono">{draft.link}</small>
+                    </div>
+                    <div className="wa-link-actions">
+                      <button
+                        className="button"
+                        type="button"
+                        onClick={() =>
+                          void onCopyText(
+                            draft.link,
+                            `Link disalin: ${draft.record.namaLengkap || "Tanpa nama"}`,
+                          )
+                        }
+                      >
+                        <Copy aria-hidden="true" size={18} />
+                        Copy link
+                      </button>
+                      <a className="button primary" href={draft.link} target="_blank" rel="noreferrer">
+                        <ExternalLink aria-hidden="true" size={18} />
+                        Open WhatsApp
+                      </a>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          ) : (
+            <div className="batch-output">
+              <textarea readOnly value={batchText} aria-label="Output batch WA.me" rows={8} />
+              <button className="button primary" type="button" onClick={copyBatch} disabled={!batchText}>
+                <Copy aria-hidden="true" size={18} />
+                Copy All
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function buildWaRecipientGroups(records: CanonicalRecord[]): WaRecipientGroup[] {
+  const activeRecords = [...records].sort((first, second) =>
+    TEXT_COLLATOR.compare(first.namaLengkap, second.namaLengkap),
+  );
+  const receivableRecords = activeRecords.filter((record) => record.receivableAmount > 0);
+  const products = new Map<string, { label: string; records: CanonicalRecord[] }>();
+
+  for (const record of activeRecords) {
+    const current =
+      products.get(record.normalizedProductName) ??
+      {
+        label: record.productName,
+        records: [],
+      };
+
+    current.records.push(record);
+    products.set(record.normalizedProductName, current);
+  }
+
+  return [
+    {
+      id: "all",
+      label: "Seluruh Siswa",
+      detail: `${activeRecords.length.toLocaleString("id-ID")} record aktif`,
+      records: activeRecords,
+    },
+    {
+      id: "receivable",
+      label: "Siswa Belum Lunas",
+      detail: `${receivableRecords.length.toLocaleString("id-ID")} record dengan sisa pembayaran`,
+      records: receivableRecords,
+    },
+    ...[...products.entries()]
+      .sort(([, first], [, second]) => TEXT_COLLATOR.compare(first.label, second.label))
+      .map(([normalizedProductName, product]) => ({
+        id: `product:${normalizedProductName}`,
+        label: `Produk: ${product.label}`,
+        detail: `${product.records.length.toLocaleString("id-ID")} record aktif`,
+        records: product.records,
+      })),
+  ];
 }
 
 function Kpi({
